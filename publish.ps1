@@ -1,4 +1,4 @@
-# publish.ps1 — 将 dsh-web-custom-title 发布为 GitHub 公开仓库
+﻿# publish.ps1 — 将 dsh-web-custom-title 发布为 GitHub 公开仓库
 #
 # 前置条件：
 #   1. 安装 GitHub CLI：winget install GitHub.cli   （或 https://cli.github.com）
