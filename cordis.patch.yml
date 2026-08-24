@@ -1,0 +1,12 @@
+# dsh-web-custom-title bundle patch: inserts its public dsh.client entry into
+# the web plugin roster. The bundle follows the official dsh plugin shape; the
+# profile wires it through its package.json `dsh.profile.bundles` list.
+- insert:
+    - id: web-custom-title
+      name: 'dsh-web-custom-title'
+      # Optional declarative title. When set, it is the fallback shown while
+      # no runtime override exists; the runtime override is edited by
+      # double-clicking the hero headline in the GUI (persisted in
+      # localStorage). Leave this unset to rely on inline editing only.
+      # config:
+      #   title: '我的深海航程'
