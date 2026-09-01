@@ -10,3 +10,11 @@
       # localStorage). Leave this unset to rely on inline editing only.
       # config:
       #   title: '我的深海航程'
+      # Optional declarative composer placeholder fallbacks, shown only while
+      # no runtime override exists; the runtime override is edited via the
+      # pencil button next to the chat box (persisted in localStorage):
+      #   hero    -> new-session (hero page) placeholder
+      #   session -> existing-session composer placeholder
+      # config:
+      #   hero: '描述你希望构建的东西'
+      #   session: '继续聊聊这个任务吧'
