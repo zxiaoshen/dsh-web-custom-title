@@ -248,6 +248,8 @@ window.__ModuleLoader__.load({
 		function apply(ctx) {
 			// Composer placeholder customization (merged feature).
 			applyComposerPlaceholder(ctx);
+			// Conversation typing-scroll anchor fix (see function docs).
+			applyComposerFlowFix(ctx);
 			migrateLegacyStorage();
 
 			const configTitle = (() => {
@@ -951,6 +953,145 @@ const HERO_STORAGE_KEY = "dsh.web-custom-placeholder.hero";
 			} else {
 				start();
 			}
+		}
+
+		/**
+ * DSH core layout workaround — typing no longer auto-scrolls the
+ * transcript down, while the composer stays docked at the window
+ * bottom.
+ *
+ * Why: the core conversation UI keeps the composer inside the message
+ * scroll container ([data-conversation-scroll]) pinned to the viewport
+ * bottom with `position: sticky; bottom: 0`, while its in-flow slot
+ * sits at the very end of the tall scrollable transcript. On every
+ * real keystroke the browser's native "keep the caret visible"
+ * scrolling then pushes the transcript down one step until it hits the
+ * floor (pure browser behavior: no JS scroll call, not CSS scroll
+ * anchoring; synthetic input and caret-only keys do not trigger it).
+ *
+ * v1 (overlay anchor) clipped the transcript and was abandoned. v2
+ * (`position: absolute; bottom: 0` inside the scrollport) did NOT dock:
+ * absolutely positioned children of a scroll container scroll away with
+ * its content (verified in-browser), so the composer was anchored at the
+ * top of the tall content and became invisible as soon as the transcript
+ * scrolled — that is the "chat box disappeared / stuck" regression.
+ *
+ * Fix (v3): dock the composer to the WINDOW bottom with
+ * `position: fixed`, outside any scrolled content. The caret then no
+ * longer lives in the transcript's scrollable area, so the browser never
+ * nudges the transcript on keystrokes. The seat's left/width are copied
+ * from the live [data-conversation-scroll] pane (JS-synced, so sidebar
+ * changes / resizes / session switches stay correct), and the message
+ * flow gets a bottom pad equal to the live composer height
+ * (--dsh-composer-height, maintained by core) so the last message can
+ * still be scrolled fully above the docked composer. Only the active
+ * conversation phase is touched (hero/inspector layouts untouched);
+ * every DOM/CSS write is reverted by the ctx.effect disposer.
+ */
+		function applyComposerFlowFix(ctx) {
+			if (typeof document === "undefined") return;
+			const CSS_TAG_ID = "dsh-web-custom-title/web-composer-flow-fix.css";
+			const FIX_CLS = "dsh-composer-fixed";
+			const RULES = [
+				// Dock the seat to the window bottom, outside the scrolled content.
+				// left/width come from JS-synced CSS variables mirroring the live
+				// conversation pane. !important guards against skins re-pinning it.
+				`[data-phase='active'] [data-conversation-scroll][data-dsh-fix]>[data-composer-seat].${FIX_CLS}{position:fixed !important;bottom:0 !important;top:auto !important;right:auto !important;left:var(--dsh-fixed-left,0) !important;width:var(--dsh-fixed-width,100vw) !important;z-index:30 !important;margin:0 !important}`, // prettier-ignore
+				// Reserve the composer's live height under the message flow so the
+				// tail of the transcript can scroll clear of the docked seat (core
+				// only uses --dsh-composer-height for the FAB).
+				`[data-phase='active'] [data-conversation-scroll][data-dsh-fix] [data-chat-flow]{padding-bottom:calc(var(--dsh-composer-height, 152px) + 24px)}`,
+			].join("\n");
+			let styleTag = document.querySelector(`style[data-plugin-css="${CSS_TAG_ID}"]`);
+			if (styleTag === null) {
+				styleTag = document.createElement("style");
+				styleTag.dataset.plugin = "dsh-web-custom-title";
+				styleTag.dataset.pluginCss = CSS_TAG_ID;
+				styleTag.textContent = RULES;
+				document.head.appendChild(styleTag);
+			}
+
+			let rafPending = false;
+			let fixObserver = null;
+			let resizeObserver = null;
+
+			const scheduleSync = () => {
+				if (rafPending) return;
+				rafPending = true;
+				requestAnimationFrame(() => {
+					rafPending = false;
+					syncOnce();
+				});
+			};
+
+			/** Apply the docked-fixed layout to the active conversation. */
+			const syncOnce = () => {
+				const phase = document.querySelector("[data-phase='active']");
+				const sc = phase ? phase.querySelector("[data-conversation-scroll]") : null;
+				if (!sc) return;
+				const seat = sc.querySelector("[data-composer-seat]");
+				// Only the seat that sits directly inside the scrollport is docked;
+				// anything else (hero/inspector) is left exactly as core renders it.
+				if (!seat || seat.parentElement !== sc) return;
+				seat.classList.add(FIX_CLS);
+				sc.setAttribute("data-dsh-fix", "");
+				const r = sc.getBoundingClientRect();
+				if (r.width > 0) {
+					seat.style.setProperty("--dsh-fixed-left", `${Math.round(r.left)}px`);
+					seat.style.setProperty("--dsh-fixed-width", `${Math.round(r.width)}px`);
+				}
+			};
+
+			const cleanupActive = () => {
+				for (const seat of document.querySelectorAll(`[data-composer-seat].${FIX_CLS}`)) {
+					seat.classList.remove(FIX_CLS);
+				}
+				for (const sc of document.querySelectorAll("[data-conversation-scroll][data-dsh-fix]")) {
+					sc.removeAttribute("data-dsh-fix");
+				}
+			};
+
+			syncOnce();
+			if (typeof ResizeObserver !== "undefined") {
+				resizeObserver = new ResizeObserver(() => scheduleSync());
+				resizeObserver.observe(document.body);
+			}
+			window.addEventListener("resize", scheduleSync);
+
+			fixObserver = new MutationObserver((records) => {
+				for (const record of records) {
+					if (record.type === "attributes") {
+						// React re-rendering the seat must never drop our docked class.
+						if (record.attributeName === "class" && record.target instanceof Element && record.target.matches(`[data-composer-seat]`)) {
+							scheduleSync();
+							return;
+						}
+						continue;
+					}
+					const nodes = record.type === "childList" ? record.addedNodes : [record.target];
+					for (const node of nodes) {
+						if (node == null) continue;
+						const el = node instanceof Element ? node : node.parentElement;
+						if (el === null) continue;
+						if (el.matches("[data-phase]") || el.matches("[data-conversation-scroll]") || el.matches("[data-composer-seat]") || el.closest("[data-composer-seat]") !== null) {
+							scheduleSync();
+							return;
+						}
+					}
+				}
+			});
+			fixObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-phase", "class"] });
+
+			ctx.effect(() => () => {
+				fixObserver?.disconnect();
+				fixObserver = null;
+				resizeObserver?.disconnect();
+				resizeObserver = null;
+				window.removeEventListener("resize", scheduleSync);
+				cleanupActive();
+				styleTag?.remove();
+				styleTag = null;
+			}, "dsh-web-custom-title: composer docked-fixed (typing-scroll workaround v3)");
 		}
 
 		exports.apply = apply;
