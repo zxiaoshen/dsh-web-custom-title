@@ -238,6 +238,8 @@ function match(el, selector) {
     return el.getAttribute("data-slot") === "conversation.input.model";
   }
   if (sel === "[class*='trailing']") return el.className.includes("trailing");
+  if (sel === "[class*='standardControls']") return el.className.includes("standardControls");
+  if (sel === "[data-composer-placeholder]") return el.hasAttribute("data-composer-placeholder");
   if (sel === "textarea") return el.tagName === "TEXTAREA";
   if (sel === "[data-phase]") return el.hasAttribute("data-phase");
   if (sel === "[data-phase='active']") return el.getAttribute("data-phase") === "active";
@@ -414,11 +416,32 @@ function buildComposerCard() {
   const send = new Element("button");
   send.className = "composer_primary__x";
   toolbar.append(controls, send);
+  // DSH 0.2.1 replaced the composer textarea with a contenteditable and renders
+  // the visible hint as its own `[data-composer-placeholder]` div — there is no
+  // placeholder attribute to write.
+  const grow = new Element("div");
+  grow.className = "composer_grow__x";
+  const editor = new Element("div");
+  editor.setAttribute("contenteditable", "true");
+  editor.setAttribute("data-placeholder", "给智能体发消息");
+  const placeholder = new Element("div");
+  placeholder.setAttribute("data-composer-placeholder", "");
+  placeholder.textContent = "给智能体发消息";
+  grow.append(editor, placeholder);
+  card.append(toolbar, grow);
+  body.appendChild(card);
+  return { card, toolbar, controls, modelSlot, send, editor, placeholder };
+}
+
+/** DSH 0.1.x shape: a real textarea whose `placeholder` attribute carries the hint. */
+function buildLegacyCard() {
+  const card = new Element("div");
+  card.setAttribute("data-composer-card", "");
   const textarea = new Element("textarea");
   textarea.setAttribute("placeholder", "给智能体发消息");
-  card.append(toolbar, textarea);
+  card.append(textarea);
   body.appendChild(card);
-  return { card, toolbar, controls, modelSlot, send, textarea };
+  return { card, textarea };
 }
 
 const disposers = [];
@@ -474,31 +497,41 @@ check("no detached button left behind", strays.length === 0, `${strays.length} s
 
 /* -------------------------------------------------------- placeholder override */
 
-const ta = composer.card.querySelector("textarea");
-check("shipped default placeholder is left alone with no override", ta.getAttribute("placeholder") === "给智能体发消息");
+const hint = composer.placeholder;
+check("shipped default placeholder is left alone with no override", hint.textContent === "给智能体发消息");
 
 localStorage.setItem("dsh.web-custom-placeholder.session", "继续聊聊这个任务吧");
 localStorage.setItem("dsh.web-custom-placeholder.hero", "描述你希望构建的东西");
 await new Promise((resolve) => setTimeout(resolve, 1200));
-check("custom placeholder is applied from localStorage", ta.getAttribute("placeholder") === "继续聊聊这个任务吧");
-check("mode tag marks the decorated textarea", ta.getAttribute("data-cpp-mode") === "session");
+check("0.2.1 hint div is overridden from localStorage", hint.textContent === "继续聊聊这个任务吧", hint.textContent);
+check("mode tag marks the decorated hint node", hint.getAttribute("data-cpp-mode") === "session");
 
 /* ------ DSH 0.2.1 shipped placeholders: the wording gained a capability suffix */
 
-ta.setAttribute("placeholder", "发消息或创建任务, / 调用指令, @ 文件或对话");
+hint.textContent = "发消息或创建任务, / 调用指令, @ 文件或对话";
 await new Promise((resolve) => setTimeout(resolve, 1200));
 check(
   "0.2.1 session placeholder (with command hints) is still overridden",
-  ta.getAttribute("placeholder") === "继续聊聊这个任务吧",
-  ta.getAttribute("placeholder"),
+  hint.textContent === "继续聊聊这个任务吧",
+  hint.textContent,
 );
 
-ta.setAttribute("placeholder", "描述你想要构建的内容, / 调用指令, @ 文件或对话");
+hint.textContent = "描述你想要构建的内容, / 调用指令, @ 文件或对话";
 await new Promise((resolve) => setTimeout(resolve, 1200));
 check(
   "0.2.1 hero placeholder (with command hints) is still overridden",
-  ta.getAttribute("placeholder") === "描述你希望构建的东西",
-  ta.getAttribute("placeholder"),
+  hint.textContent === "描述你希望构建的东西",
+  hint.textContent,
+);
+
+/* ------------------------- DSH 0.1.x textarea path must keep working too */
+
+const legacy = buildLegacyCard();
+await new Promise((resolve) => setTimeout(resolve, 1200));
+check(
+  "legacy textarea placeholder is still overridden",
+  legacy.textarea.getAttribute("placeholder") === "继续聊聊这个任务吧",
+  legacy.textarea.getAttribute("placeholder"),
 );
 
 
@@ -522,7 +555,8 @@ for (const dispose of disposers) {
 check("disposer runs without throwing", teardownError === null, teardownError?.message ?? "");
 check("disposer removes every button", document.querySelector("button[data-cpp-btn]") === null);
 check("disposer clears the watchdog interval", intervals.size === 0, `${intervals.size} interval(s) still armed`);
-check("disposer restores the shipped placeholder", ta.getAttribute("placeholder") === "给智能体发消息");
+check("disposer restores the shipped placeholder", hint.textContent === "给智能体发消息");
+check("disposer restores the legacy textarea placeholder", legacy.textarea.getAttribute("placeholder") === "给智能体发消息");
 
 for (const id of timers) clearTimeout(id);
 for (const id of intervals) clearInterval(id);

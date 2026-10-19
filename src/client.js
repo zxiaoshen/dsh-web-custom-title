@@ -734,7 +734,7 @@ const HERO_STORAGE_KEY = "dsh.web-custom-placeholder.hero";
 			};
 
 			const styleTag = injectCss();
-			/** textarea -> { original, mode } (text we first saw before override). */
+			/** hint node -> { original, mode, kind } (text we first saw before override). */
 			const decorated = new Map();
 			const attachedButtons = new Map();
 			let panel = null;
@@ -754,22 +754,46 @@ const HERO_STORAGE_KEY = "dsh.web-custom-placeholder.hero";
 			};
 
 			/**
-			 * Bring one textarea back to its pre-override placeholder and drop
-			 * our bookkeeping (React will keep the shipped default from here).
+			 * The composer's visible hint is version dependent:
+			 *   - DSH 0.2.x: a dedicated `<div data-composer-placeholder>`
+			 *     positioned over a contenteditable — there is NO textarea,
+			 *     so writing the old `placeholder` attribute changed nothing;
+			 *   - DSH 0.1.x: a real `<textarea placeholder="...">`.
+			 * A "target" is the node carrying the hint plus the accessor kind.
 			 */
-			function restoreTextarea(ta) {
-				const rec = decorated.get(ta);
+			const PLACEHOLDER_SELECTOR = "[data-composer-placeholder]";
+
+			function findPlaceholderTarget(card) {
+				const node = card.querySelector(PLACEHOLDER_SELECTOR);
+				if (node !== null) return { kind: "text", node };
+				const ta = card.querySelector("textarea");
+				if (ta !== null) return { kind: "attribute", node: ta };
+				return null;
+			}
+			function readPlaceholder(target) {
+				const raw =
+					target.kind === "attribute" ? target.node.getAttribute("placeholder") : target.node.textContent;
+				return typeof raw === "string" ? raw.trim() : "";
+			}
+			function writePlaceholder(target, value) {
+				if (target.kind === "attribute") target.node.setAttribute("placeholder", value);
+				else target.node.textContent = value;
+			}
+			/** Put one hint back to its pre-override text and drop the bookkeeping. */
+			function restoreTarget(target) {
+				const rec = decorated.get(target.node);
 				if (rec) {
-					ta.setAttribute("placeholder", rec.original);
-					decorated.delete(ta);
+					writePlaceholder({ kind: rec.kind, node: target.node }, rec.original);
+					decorated.delete(target.node);
 				}
-				ta.removeAttribute(MODE_ATTR);
+				target.node.removeAttribute(MODE_ATTR);
 			}
 
-			/** Override one composer textarea if its state is eligible. */
-			function syncTextarea(ta) {
-				if (!(ta instanceof Element) || ta.tagName !== "TEXTAREA") return;
-				const current = ta.getAttribute("placeholder") ?? "";
+			/** Override one composer hint if its state is eligible. */
+			function syncPlaceholder(card) {
+				const target = findPlaceholderTarget(card);
+				if (target === null) return;
+				const current = readPlaceholder(target);
 
 				// Mode resolution order:
 				//  1. current text equals one of our custom texts (re-apply that
@@ -781,26 +805,28 @@ const HERO_STORAGE_KEY = "dsh.web-custom-placeholder.hero";
 				else if (current !== "" && current === effective("session")) mode = "session";
 				else mode = modeFromPlaceholder(current);
 				if (mode === null) {
-					const tag = ta.getAttribute(MODE_ATTR);
+					const tag = target.node.getAttribute(MODE_ATTR);
 					if (tag === "hero" || tag === "session") mode = tag;
 				}
 				if (mode === null) {
 					// Special state (workspace picker / plan / steer queue /
 					// parent offline / unavailable) — leave untouched.
-					if (decorated.has(ta)) restoreTextarea(ta);
+					if (decorated.has(target.node)) restoreTarget(target);
 					return;
 				}
 
 				const custom = effective(mode);
 				if (!custom) {
 					// No custom text for this mode: show the shipped default.
-					if (decorated.has(ta)) restoreTextarea(ta);
-					else ta.removeAttribute(MODE_ATTR);
+					if (decorated.has(target.node)) restoreTarget(target);
+					else target.node.removeAttribute(MODE_ATTR);
 					return;
 				}
-				if (!decorated.has(ta)) decorated.set(ta, { original: current, mode });
-				ta.setAttribute(MODE_ATTR, mode);
-				if (current !== custom) ta.setAttribute("placeholder", custom);
+				if (!decorated.has(target.node)) {
+					decorated.set(target.node, { original: current, mode, kind: target.kind });
+				}
+				target.node.setAttribute(MODE_ATTR, mode);
+				if (current !== custom) writePlaceholder(target, custom);
 			}
 
 			/**
@@ -891,10 +917,13 @@ const HERO_STORAGE_KEY = "dsh.web-custom-placeholder.hero";
 			}
 
 			function syncAll() {
+				// Drop bookkeeping for hint nodes React already replaced.
+				for (const node of [...decorated.keys()]) {
+					if (!(node instanceof Element) || !document.body.contains(node)) decorated.delete(node);
+				}
 				for (const card of document.querySelectorAll(CARD_SELECTOR)) {
 					placeButton(card);
-					const ta = card.querySelector("textarea");
-					if (ta !== null) syncTextarea(ta);
+					syncPlaceholder(card);
 				}
 			}
 
@@ -962,12 +991,12 @@ const HERO_STORAGE_KEY = "dsh.web-custom-placeholder.hero";
 			function resetDefaults() {
 				writeStored(HERO_STORAGE_KEY, "");
 				writeStored(SESSION_STORAGE_KEY, "");
-				for (const [ta, rec] of decorated) {
-					// Restore the placeholder React rendered before our override
-					// instead of a hardcoded label: the shipped wording changes
-					// between DSH versions and must not go stale here.
-					ta.setAttribute("placeholder", rec.original);
-					ta.removeAttribute(MODE_ATTR);
+				for (const [node, rec] of decorated) {
+					// Restore the hint React rendered before our override instead
+					// of a hardcoded label: the shipped wording changes between
+					// DSH versions and must not go stale here.
+					writePlaceholder({ kind: rec.kind, node }, rec.original);
+					node.removeAttribute(MODE_ATTR);
 				}
 				decorated.clear();
 				closePanel();
@@ -1068,9 +1097,9 @@ const HERO_STORAGE_KEY = "dsh.web-custom-placeholder.hero";
 				}
 				if (onFocus !== null) window.removeEventListener("focus", onFocus);
 				document.removeEventListener("visibilitychange", onVisibility);
-				for (const [ta] of decorated) {
-					ta.setAttribute("placeholder", decorated.get(ta).original);
-					ta.removeAttribute(MODE_ATTR);
+				for (const [node, rec] of decorated) {
+					writePlaceholder({ kind: rec.kind, node }, rec.original);
+					node.removeAttribute(MODE_ATTR);
 				}
 				decorated.clear();
 				for (const [, btn] of attachedButtons) {
