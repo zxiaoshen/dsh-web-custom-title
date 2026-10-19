@@ -1,10 +1,15 @@
 {
   "name": "dsh-web-custom-title",
   "description": "DSH Web 客户端插件：自定义新页面（无会话 Hero 区）的大标题与圆形图标（双击改名 / 双击换图），并支持分别自定义新会话与已有会话聊天框的提示文字（铅笔按钮编辑）。",
-  "version": "1.1.0",
+  "version": "1.1.2",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
+  "scripts": {
+    "build": "node build-client.mjs",
+    "verify": "node tools/verify-client.mjs",
+    "test": "node build-client.mjs && node tools/verify-client.mjs"
+  },
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",

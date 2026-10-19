@@ -108,6 +108,7 @@ pnpm install
 
 ```bash
 node build-client.mjs   # 读取 src/client.js + assets/hero-mark.png → 生成 lib/client.js
+node tools/verify-client.mjs   # 桩 DOM 无头验证：注入、自愈、占位文案、卸载还原
 ```
 
 - 图标显示大小：`src/client.js` 中 `BRAND_MARK_SIZE`（默认 48px）
@@ -120,6 +121,7 @@ node build-client.mjs   # 读取 src/client.js + assets/hero-mark.png → 生成
 - 通过 `MutationObserver` 跟踪 Hero 区挂载/重渲染（含中英文切换）；品牌图标为纯 DOM 注入（`span[class*='fishHitbox']` 容器内替换内容）。
 - 图标放大到 48px 时，插件自有的样式表规则会把 Hero 标题行网格首列（官方固定 34px）同步加宽，布局保持整洁。
 - 提示文字通过 `div[data-composer-card]` 定位输入区，按占位文案精确匹配新会话 / 已有会话两种默认状态（zh/en 均覆盖）；工作区选择、计划模式、插话排队、父会话离线等特殊状态不受影响。
+- **铅笔按钮自愈（v1.1.1）**：按钮是注入进 React 自管的动作行里的，React 重渲染会把它整块清掉。旧实现只靠 `MutationObserver`（且只在"新增节点"时回调）+ `requestAnimationFrame` 重建，因此有三种会丢按钮的情形：React 只删不增的那次重渲染（observer 静默）、标签页在后台（rAF 不跑）、以及按钮变成游离节点而新行里没有按钮。现在改为：`isPlacedCorrectly()` 校验座位（必须是模型选择器槽位的紧邻前一个兄弟节点），不满足就重建；另有 1 秒轮询看门狗 + `window focus` / `visibilitychange` 立即补偿，兜住 rAF 停摆；游离在 `<body>` 下的旧按钮会被清理，不会重复堆积。`syncAll()` 在一切正常时是空操作。
 - 明暗主题、皮肤切换不影响；插件卸载后所有改动自动还原。
 
 ## License

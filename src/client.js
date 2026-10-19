@@ -41,7 +41,9 @@ window.__ModuleLoader__.load({
 		const LEGACY_MARK_STORAGE_KEY = "dsh.hero-title.mark";
 		const CSS_TAG_ID = "dsh-web-custom-title/web-custom-title.css";
 		const DEFAULT_TITLES = new Set(["探索未至之境", "Into the Unknown"]);
-		const HEADLINE_TEXT_SELECTOR = "span[class*='headlineText']";
+		// DSH 0.2.x moved the hero text into a class-less span inside the
+		// titleGroup container; older builds used span.headlineText. Match both.
+		const HEADLINE_TEXT_SELECTOR = "span[class*='headlineText'], [class*='titleGroup'] > span:first-child";
 		const BRAND_MARK_SELECTOR = "span[class*='fishHitbox']";
 		const BRAND_MARK_IMG_ATTR = "data-hero-mark";
 		const BRAND_MARK_SIZE = 48; // circular icon size — larger circle than the shipped 34px whale/fish mark
@@ -53,14 +55,20 @@ window.__ModuleLoader__.load({
 		const HERO_MARK_DATA_URL = "@@HERO_MARK_DATA_URL@@";
 
 		const INJECTED_CSS = [
-			`span[class*='headlineText']{cursor:text}`,
+			`span[class*='headlineText'],[class*='titleGroup']>span:first-child{cursor:text}`,
 			`span[data-hero-title-editing]{outline:1px dashed var(--dsw-alias-border-l3,currentColor);outline-offset:3px;border-radius:6px}`,
 			`img[data-hero-mark]{border-radius:50%;object-fit:cover;display:block;user-select:none;pointer-events:none}`,
 			// Enlarge the brand-mark slot so the circular icon fills a bigger
-			// circle: widen the hitbox and the hero headline's first grid column
-			// (the shipped layout pins that column to 34px).
+			// circle. Never set the headline's grid columns here: DSH 0.2.x moved
+			// the text into a titleGroup beside the preview badge, and a skin that
+			// lays the headline out as a grid owns its own column template. Forcing
+			// a 48px first column squeezed the group into one character per line —
+			// the "vertical title" regression.
 			`[data-phase='hero'] span[class*='fishHitbox']{width:${BRAND_MARK_SIZE}px !important;height:${BRAND_MARK_SIZE}px !important;cursor:pointer}`,
-			`[data-phase='hero'] [class*='headline']{grid-template-columns:${BRAND_MARK_SIZE}px auto auto !important}`,
+			// DSH 0.2.x hero DOM: when a grid skin is active, place the text+badge
+			// group under the mark and keep it centred. Inert in the shipped flex
+			// layout, where these grid-placement properties do not apply.
+			`[data-phase='hero'] [class*='titleGroup']{grid-column:2;grid-row:2;justify-self:center}`,
 		].join("\n");
 
 		function injectCss() {
@@ -515,10 +523,19 @@ const HERO_STORAGE_KEY = "dsh.web-custom-placeholder.hero";
 		const MODE_ATTR = "data-cpp-mode";
 		const CARD_SELECTOR = "div[data-composer-card]";
 		// Shipped default placeholders we are allowed to override (zh/en).
-		const HERO_DEFAULTS = new Set(["描述你想要构建的内容", "Describe what you want to build"]);
-		const SESSION_DEFAULTS = new Set(["给智能体发消息", "Message the agent"]);
+		// DSH 0.2.1 appends capability hints to the shipped placeholder
+		// ("描述你想要构建的内容, / 调用指令, @ 文件或对话"), so these are
+		// PREFIXES matched with startsWith, never exact strings; the 0.1.x
+		// wording stays listed so the plugin still works on older runtimes.
+		const HERO_DEFAULT_PREFIXES = ["描述你想要构建的内容", "Describe what you want to build"];
+		const SESSION_DEFAULT_PREFIXES = [
+			"发消息或创建任务",
+			"Message or run a task",
+			"给智能体发消息",
+			"Message the agent",
+		];
 		const HERO_LABELS = { zh: "描述你想要构建的内容", en: "Describe what you want to build" };
-		const SESSION_LABELS = { zh: "给智能体发消息", en: "Message the agent" };
+		const SESSION_LABELS = { zh: "发消息或创建任务", en: "Message or run a task" };
 		const PENCIL_SVG =
 			'<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.5 2.5l2 2L6.5 11.5 3 12l.5-3.5z"/></svg>';
 
@@ -533,8 +550,17 @@ const HERO_STORAGE_KEY = "dsh.web-custom-placeholder.hero";
 			return isZh() ? labels.zh : labels.en;
 		}
 		function modeFromPlaceholder(value) {
-			if (HERO_DEFAULTS.has(value)) return "hero";
-			if (SESSION_DEFAULTS.has(value)) return "session";
+			const text = typeof value === "string" ? value.trim() : "";
+			if (text === "") return null;
+			// Prefix match: DSH appends ", / 调用指令, @ 文件或对话" (or the
+			// English equivalent) to the shipped wording, and may keep adding
+			// hints, so only the leading phrase is stable.
+			for (const prefix of HERO_DEFAULT_PREFIXES) {
+				if (text === prefix || text.startsWith(`${prefix},`)) return "hero";
+			}
+			for (const prefix of SESSION_DEFAULT_PREFIXES) {
+				if (text === prefix || text.startsWith(`${prefix},`)) return "session";
+			}
 			return null;
 		}
 
@@ -777,29 +803,89 @@ const HERO_STORAGE_KEY = "dsh.web-custom-placeholder.hero";
 				if (current !== custom) ta.setAttribute("placeholder", custom);
 			}
 
+			/**
+			 * Cleanup for a button React already detached from its composer card.
+			 *
+			 * React wipes/rebuilds the composer's action row on every relevant
+			 * re-render, and our injected button is not React-owned, so the
+			 * removed node survives as a DETACHED element (still returned by
+			 * document.querySelector) unless we drop its listener and remove it.
+			 * Only direct children of <body> (or fully orphaned nodes) are swept:
+			 * a button inside a *live* card is placeButton's business.
+			 */
+			function dropStrayButton(btn) {
+				const parent = btn.parentElement;
+				if (parent !== null && parent !== document.body) return;
+				btn.removeEventListener("click", openPanel);
+				btn.remove();
+				for (const [card, known] of attachedButtons) {
+					if (known === btn) attachedButtons.delete(card);
+				}
+			}
+
+			/**
+			 * Whether an existing button sits exactly where we want it: a
+			 * `button[data-cpp-btn]` that is the immediate previous element
+			 * sibling of the model-selector slot inside its ancestor chain in
+			 * THIS card. Used to detect both a wiped button and one React moved
+			 * elsewhere, so the watchdog re-injects instead of trusting any
+			 * present node.
+			 */
+			function isPlacedCorrectly(card, btn) {
+				if (!card.contains(btn) || btn.parentElement === null) return false;
+				const modelSlot = card.querySelector('[data-slot="conversation.input.model"]');
+				if (modelSlot === null) {
+					const trailing = card.querySelector("[class*='trailing']");
+					return trailing === null || trailing.contains(btn);
+				}
+				// Same parent as the slot AND the immediate previous sibling:
+				// only then is the pencil seated left of the selector without
+				// the watchdog tearing it down again.
+				return modelSlot.parentElement === btn.parentElement && modelSlot.previousElementSibling === btn;
+			}
+
 			/** Inject / re-inject the pencil button into one composer card. */
 			function placeButton(card) {
 				if (!(card instanceof Element)) return;
 				let btn = card.querySelector("button[data-cpp-btn]");
-				if (btn === null) {
-					btn = document.createElement("button");
-					btn.type = "button";
-					btn.dataset.cppBtn = "";
-					btn.title = ui.btnTitle;
-					btn.setAttribute("aria-label", ui.btnTitle);
-					btn.innerHTML = PENCIL_SVG;
-					btn.addEventListener("click", openPanel);
-					// Insert into the trailing action row, immediately LEFT of
-					// the model selector ([data-slot="conversation.input.model"],
-					// e.g. "DeepSeek-V4-Flash High"); fall back to the row end,
-					// then the card root. React wipes the node on re-render and
-					// the observer re-injects it — same as the title plugin.
+				if (btn !== null && isPlacedCorrectly(card, btn)) {
+					attachedButtons.set(card, btn);
+					return;
+				}
+				// Either React wiped the button, or it landed somewhere wrong
+				// (e.g. after a DSH upgrade moved the trailing row): rebuild it
+				// from scratch so the anchor rules below decide the seat again.
+				if (btn !== null) {
+					if (btn.parentElement === null || btn.parentElement === document.body) dropStrayButton(btn);
+					else btn.remove();
+					btn = null;
+				}
+				btn = document.createElement("button");
+				btn.type = "button";
+				btn.dataset.cppBtn = "";
+				btn.title = ui.btnTitle;
+				btn.setAttribute("aria-label", ui.btnTitle);
+				btn.innerHTML = PENCIL_SVG;
+				btn.addEventListener("click", openPanel);
+				// Seat the button immediately LEFT of the model selector.
+				//
+				// Never assume the selector is a child of the trailing row:
+				// DSH 0.2.1 introduced a `standardControls` group inside the row
+				// and moved the model seat into it, with the send button still a
+				// later sibling of that group. Appending to the row therefore
+				// dropped the pencil to the RIGHT of send, and because
+				// isPlacedCorrectly() could never match, the watchdog rebuilt it
+				// every second — the pencil looked misplaced and swallowed
+				// clicks. Insert into the SLOT'S OWN parent instead.
+				const modelSlot = card.querySelector('[data-slot="conversation.input.model"]');
+				if (modelSlot !== null && modelSlot.parentElement !== null) {
+					modelSlot.parentElement.insertBefore(btn, modelSlot);
+				} else {
+					const controls = card.querySelector("[class*='standardControls']");
 					const trailing = card.querySelector("[class*='trailing']");
-					const modelSlot = card.querySelector('[data-slot="conversation.input.model"]');
-					if (trailing !== null) {
-						if (modelSlot !== null && modelSlot.parentElement === trailing) trailing.insertBefore(btn, modelSlot);
-						else trailing.appendChild(btn);
-					} else card.appendChild(btn);
+					if (controls !== null) controls.appendChild(btn);
+					else if (trailing !== null) trailing.appendChild(btn);
+					else card.appendChild(btn);
 				}
 				attachedButtons.set(card, btn);
 			}
@@ -877,7 +963,10 @@ const HERO_STORAGE_KEY = "dsh.web-custom-placeholder.hero";
 				writeStored(HERO_STORAGE_KEY, "");
 				writeStored(SESSION_STORAGE_KEY, "");
 				for (const [ta, rec] of decorated) {
-					ta.setAttribute("placeholder", defaultLabel(rec.mode === "session" ? "session" : "hero"));
+					// Restore the placeholder React rendered before our override
+					// instead of a hardcoded label: the shipped wording changes
+					// between DSH versions and must not go stale here.
+					ta.setAttribute("placeholder", rec.original);
 					ta.removeAttribute(MODE_ATTR);
 				}
 				decorated.clear();
@@ -885,7 +974,20 @@ const HERO_STORAGE_KEY = "dsh.web-custom-placeholder.hero";
 				syncAll();
 			}
 
+			/**
+			 * Coalesce bursts of observer records into one sync per frame.
+			 *
+			 * This is the FAST path only: requestAnimationFrame is paused or
+			 * heavily throttled while the tab is hidden (background tab,
+			 * minimized window, browser power saving), so it must never be the
+			 * only way a wiped button comes back — the interval watchdog below
+			 * is the guaranteed path.
+			 */
 			const scheduleSync = () => {
+				if (document.hidden) {
+					syncAll();
+					return;
+				}
 				if (rafPending) return;
 				rafPending = true;
 				requestAnimationFrame(() => {
@@ -931,14 +1033,50 @@ const HERO_STORAGE_KEY = "dsh.web-custom-placeholder.hero";
 				characterData: true,
 			});
 
+			/**
+			 * Watchdog: the guaranteed re-injection path.
+			 *
+			 * The MutationObserver + rAF pair above misses three real cases:
+			 *   1. React removes the trailing row and adds nothing back in the
+			 *      same commit — a remove-only mutation is never delivered, so
+			 *      the observer stays silent and the button is simply gone;
+			 *   2. the tab is hidden, where requestAnimationFrame does not run;
+			 *   3. our button survives as a DETACHED node while React renders a
+			 *      fresh row, so "button is present" is not the same as "button
+			 *      is on screen" — isPlacedCorrectly re-seats it instead.
+			 * syncAll() is a cheap no-op when everything is already correct.
+			 */
+			let watchdog = null;
+			let onFocus = null;
+			const onVisibility = () => {
+				if (!document.hidden) syncAll();
+			};
+			if (typeof window !== "undefined") {
+				onFocus = () => {
+					if (document.querySelector("button[data-cpp-btn]") === null) syncAll();
+				};
+				window.addEventListener("focus", onFocus);
+				document.addEventListener("visibilitychange", onVisibility);
+				watchdog = setInterval(syncAll, 1000);
+			}
+
 			ctx.effect(() => () => {
 				observer?.disconnect();
+				if (watchdog !== null) {
+					clearInterval(watchdog);
+					watchdog = null;
+				}
+				if (onFocus !== null) window.removeEventListener("focus", onFocus);
+				document.removeEventListener("visibilitychange", onVisibility);
 				for (const [ta] of decorated) {
 					ta.setAttribute("placeholder", decorated.get(ta).original);
 					ta.removeAttribute(MODE_ATTR);
 				}
 				decorated.clear();
-				for (const [, btn] of attachedButtons) btn.remove();
+				for (const [, btn] of attachedButtons) {
+					btn.removeEventListener("click", openPanel);
+					btn.remove();
+				}
 				attachedButtons.clear();
 				panel?.remove();
 				panel = null;
